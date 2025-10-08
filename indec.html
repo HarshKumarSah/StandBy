@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Always-On Clock</title>
+  <style>
+    /* Reset */
+    html,body {
+      height: 100%;
+      margin: 0;
+      background: black;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+    }
+
+    /* Container fills screen and centers content */
+    .container {
+      min-height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+      box-sizing: border-box;
+      position: relative;
+      background: #000;
+      overflow: hidden;
+    }
+
+    /* Dimming overlay to simulate low brightness (can't change actual device brightness) */
+    .dim-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.65); /* increase to dim more; lower to dim less */
+      pointer-events: none;
+    }
+
+    /* Clock stack */
+    .stack {
+      position: relative; /* above overlay */
+      text-align: center;
+      z-index: 2;
+      user-select: none;
+    }
+
+    /* Large time style (rounded, heavy) */
+    .time {
+      /* responsive but very large like your SwiftUI 200 */
+      font-family: -apple-system, "SF Pro Text", "SF Pro Rounded", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-weight: 800;
+      font-size: clamp(48px, 18vw, 220px); /* scales across sizes, caps near 220px */
+      line-height: 0.9;
+      letter-spacing: -0.02em;
+      color: rgba(255,255,255,0.92); /* bright but slightly softened */
+      text-shadow: 0 1px 0 rgba(0,0,0,0.6);
+      margin: 0;
+    }
+
+    /* Date style */
+    .date {
+      margin-top: 8px;
+      font-family: -apple-system, "SF Pro Text", "SF Pro Rounded", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-weight: 500;
+      font-size: clamp(12px, 2.2vw, 22px);
+      color: rgba(255,255,255,0.78);
+    }
+
+    /* Small footer / info */
+    .info {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 12px;
+      color: rgba(255,255,255,0.12);
+      z-index: 2;
+      user-select: none;
+    }
+
+    /* Respect reduced motion preference */
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="app">
+    <div class="stack">
+      <div class="time" id="time">--:--</div>
+      <div class="date" id="date">Loading date...</div>
+    </div>
+
+    <div class="dim-overlay" id="dimOverlay"></div>
+
+    <!-- optional faint hint that Wake Lock is active -->
+    <div class="info" id="info">Wake Lock: <span id="wakeStatus">inactive</span></div>
+  </div>
+
+  <script>
+    // Formatters:
+    // Time: HH:mm (24-hour) — ensure 2-digit hour/minute
+    function formatTime(date) {
+      // Using Intl to respect locale but force 24-hour format
+      return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+    }
+
+    // Date: EEEE, MMM d, yyyy  -> Use options to get weekday, month (short), day, year
+    function formatDate(date) {
+      // weekday: long -> e.g. "Wednesday"
+      // month: short -> e.g. "Oct"
+      return new Intl.DateTimeFormat(undefined, {
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      }).format(date);
+    }
+
+    // DOM refs
+    const timeEl = document.getElementById('time');
+    const dateEl = document.getElementById('date');
+    const wakeStatusEl = document.getElementById('wakeStatus');
+
+    // Update clock every second
+    function updateClock() {
+      const now = new Date();
+      timeEl.textContent = formatTime(now);
+      dateEl.textContent = formatDate(now);
+    }
+
+    updateClock();
+    // Align with the second boundary to avoid drift:
+    const msToNextSecond = 1000 - (Date.now() % 1000);
+    setTimeout(() => {
+      updateClock();
+      setInterval(updateClock, 1000);
+    }, msToNextSecond);
+
+    // --- Screen Wake Lock API ---
+    // Try to acquire a wake lock to keep screen awake. Not all browsers support it.
+    let wakeLock = null;
+
+    async function requestWakeLock() {
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeStatusEl.textContent = 'active';
+          // Re-acquire on visibilitychange (some browsers release when tab hidden)
+          wakeLock.addEventListener('release', () => {
+            wakeStatusEl.textContent = 'released';
+            // we can try to re-acquire in some cases
+          });
+        } catch (err) {
+          console.warn('Wake Lock request failed:', err);
+          wakeStatusEl.textContent = 'error';
+        }
+      } else {
+        // Not supported
+        wakeStatusEl.textContent = 'unsupported';
+      }
+    }
+
+    function releaseWakeLock() {
+      if (wakeLock !== null) {
+        try {
+          wakeLock.release();
+        } catch (e) {
+          console.warn('Error releasing wake lock:', e);
+        }
+        wakeLock = null;
+      }
+      wakeStatusEl.textContent = 'inactive';
+    }
+
+    // Attempt wake lock on page load
+    document.addEventListener('visibilitychange', async () => {
+      // Some browsers require re-acquiring when visibility changes to visible
+      if (document.visibilityState === 'visible') {
+        // re-request if we lost it
+        if (wakeLock === null) {
+          await requestWakeLock();
+        }
+      } else {
+        // optionally release when hidden; here we keep state simple
+      }
+    });
+
+    // Attempt to get screen wake lock when the page is interacted with (improves success on mobile)
+    async function initWakeLock() {
+      try {
+        await requestWakeLock();
+      } catch (e) {
+        console.warn('Wake lock init error', e);
+      }
+    }
+
+    // Many mobile browsers require a user gesture to allow wake locks — listen for the first touch/click.
+    function onFirstGesture() {
+      initWakeLock();
+      window.removeEventListener('touchstart', onFirstGesture);
+      window.removeEventListener('click', onFirstGesture);
+    }
+    window.addEventListener('touchstart', onFirstGesture, { once: true });
+    window.addEventListener('click', onFirstGesture, { once: true });
+
+    // Release wake lock when page unloads
+    window.addEventListener('pagehide', () => {
+      releaseWakeLock();
+    });
+
+    // --- "Brightness" note / handling ---
+    // Browsers cannot change device screen brightness. We simulate lower brightness by a dim overlay.
+    // If you want even lower simulated brightness, change the overlay alpha above (dim-overlay).
+    // You can also programmatically toggle the overlay on/off if desired.
+
+    // Optional: Provide keyboard shortcut "d" to toggle dim overlay (for testing)
+    let overlayVisible = true;
+    document.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() === 'd') {
+        overlayVisible = !overlayVisible;
+        document.getElementById('dimOverlay').style.background = overlayVisible ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.0)';
+      }
+    });
+
+    // Accessibility: Respect prefers-reduced-motion is handled in CSS.
+  </script>
+</body>
+</html>
